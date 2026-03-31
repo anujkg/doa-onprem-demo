@@ -1,4 +1,3 @@
-using Azure.Identity;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 
@@ -32,17 +31,7 @@ public class OrderRepository : IOrderRepository
 
     private SqlConnection CreateConnection()
     {
-        var conn = new SqlConnection(_connectionString);
-        // Use DefaultAzureCredential token for Azure SQL when no password in connection string
-        if (!_connectionString.Contains("Password") && !_connectionString.Contains("Pwd"))
-        {
-            var credential = new DefaultAzureCredential();
-            var tokenRequestContext = new Azure.Core.TokenRequestContext(
-                new[] { "https://database.windows.net/.default" });
-            var tokenResult = credential.GetToken(tokenRequestContext);
-            conn.AccessToken = tokenResult.Token;
-        }
-        return conn;
+        return new SqlConnection(_connectionString);
     }
 
     public async Task<List<OrderDto>> GetOrdersAsync(string? status)

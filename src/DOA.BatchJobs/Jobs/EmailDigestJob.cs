@@ -86,15 +86,6 @@ public class EmailDigestJob
 
     private SqlConnection CreateConnection()
     {
-        var conn = new SqlConnection(_connectionString);
-        if (!_connectionString.Contains("Password") && !_connectionString.Contains("Pwd"))
-        {
-            var credential = new DefaultAzureCredential();
-            var tokenRequestContext = new Azure.Core.TokenRequestContext(
-                new[] { "https://database.windows.net/.default" });
-            var tokenResult = credential.GetToken(tokenRequestContext);
-            conn.AccessToken = tokenResult.Token;
-        }
-        return conn;
+        return new SqlConnection(_connectionString);
     }
 }

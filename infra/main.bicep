@@ -187,7 +187,7 @@ resource webContainerApp 'Microsoft.App/containerApps@2024-03-01' = {
             }
             {
               name: 'AzureAd__TenantId'
-              secretRef: 'azure-tenant-id'
+              value: tenantId
             }
             {
               name: 'AzureAd__ClientId'
@@ -270,6 +270,16 @@ resource batchJob 'Microsoft.App/jobs@2024-03-01' = {
         parallelism: 1
         replicaCompletionCount: 1
       }
+      secrets: [
+        {
+          name: 'acs-endpoint'
+          value: 'https://${acs.name}.communication.azure.com'
+        }
+        {
+          name: 'acs-from-address'
+          value: 'DoNotReply@${acs.name}.azurecomm.net'
+        }
+      ]
       registries: [
         {
           server: acr.properties.loginServer
