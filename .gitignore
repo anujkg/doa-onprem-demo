@@ -1,0 +1,27 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.cache
+*.dll
+*.exe
+*.pdb
+
+## Build outputs
+publish/
+out/
+
+## IDE
+.vs/
+.vscode/.settings/
+*.code-workspace
+
+## OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+## Bicep compiled output
+*.json
+!appsettings.json

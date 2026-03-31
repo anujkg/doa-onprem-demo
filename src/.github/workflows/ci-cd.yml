@@ -1,0 +1,78 @@
+# DOA Application — Current CI/CD Pipeline (On-Prem Kubernetes)
+# Builds, tests, and deploys to on-prem Harbor registry + K8s cluster
+
+name: DOA CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  HARBOR_REGISTRY: harbor.doa.local
+  IMAGE_NAME_WEB: doa/webapp
+  IMAGE_NAME_BATCH: doa/batch-jobs
+  K8S_NAMESPACE: doa-production
+
+jobs:
+  build-and-test:
+    runs-on: self-hosted  # ⚠️ On-prem runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
+
+      - name: Test
+        run: dotnet test --no-build --configuration Release
+
+  docker-build:
+    needs: build-and-test
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      # ⚠️ Pushing to on-prem Harbor registry
+      - name: Docker Login (Harbor)
+        run: docker login ${{ env.HARBOR_REGISTRY }} -u ${{ secrets.HARBOR_USER }} -p ${{ secrets.HARBOR_PASSWORD }}
+
+      - name: Build & Push Web App
+        run: |
+          docker build -f src/Dockerfile -t ${{ env.HARBOR_REGISTRY }}/${{ env.IMAGE_NAME_WEB }}:${{ github.sha }} src/
+          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.IMAGE_NAME_WEB }}:${{ github.sha }}
+
+      - name: Build & Push Batch Jobs
+        run: |
+          docker build -f src/Dockerfile.batch -t ${{ env.HARBOR_REGISTRY }}/${{ env.IMAGE_NAME_BATCH }}:${{ github.sha }} src/
+          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.IMAGE_NAME_BATCH }}:${{ github.sha }}
+
+  deploy:
+    needs: docker-build
+    runs-on: self-hosted
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      # ⚠️ kubectl configured for on-prem cluster
+      - name: Update K8s deployment
+        run: |
+          kubectl set image deployment/doa-webapp \
+            doa-webapp=${{ env.HARBOR_REGISTRY }}/${{ env.IMAGE_NAME_WEB }}:${{ github.sha }} \
+            -n ${{ env.K8S_NAMESPACE }}
+          
+          kubectl rollout status deployment/doa-webapp -n ${{ env.K8S_NAMESPACE }} --timeout=300s
+
+      - name: Update batch CronJob image
+        run: |
+          kubectl set image cronjob/doa-batch-nightly \
+            doa-batch=${{ env.HARBOR_REGISTRY }}/${{ env.IMAGE_NAME_BATCH }}:${{ github.sha }} \
+            -n ${{ env.K8S_NAMESPACE }}

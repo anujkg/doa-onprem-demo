@@ -1,0 +1,47 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: doa-batch-nightly
+  namespace: doa-production
+  labels:
+    app: doa-batch
+    tier: backend
+spec:
+  # Runs every night at 2:00 AM
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: doa-batch
+              image: harbor.doa.local/doa/batch-jobs:2.4.1
+              env:
+                # ⚠️ Same anti-patterns as the web app — secrets in env vars
+                - name: DOA_SQL_CONNSTR
+                  value: "Server=sqlprod01.doa.local;Database=DOA_Orders;User Id=doa_batch;Password=B@tch!2024;TrustServerCertificate=true"
+                - name: DOA_SMTP_HOST
+                  value: "smtp.doa.local"
+              resources:
+                requests:
+                  cpu: "500m"
+                  memory: "1Gi"
+                limits:
+                  cpu: "2000m"
+                  memory: "2Gi"
+              # Volume mount for the network file share (data import)
+              volumeMounts:
+                - name: data-feeds
+                  mountPath: /mnt/datafeeds
+                  readOnly: true
+          volumes:
+            # ⚠️ NFS mount to on-prem file server
+            - name: data-feeds
+              nfs:
+                server: fileserver01.doa.local
+                path: /DataFeeds
