@@ -1,11 +1,11 @@
 using Microsoft.Data.SqlClient;
+using Serilog;
 
 namespace DOA.BatchJobs.Jobs;
 
 /// <summary>
 /// Syncs order statuses with the external Mercury application via its REST API.
-/// ⚠️ MIGRATION: This already uses HTTP — minimal changes needed for Azure.
-///              Main change: connection string → Managed Identity for SQL.
+/// Uses DefaultAzureCredential for SQL Server Managed Identity authentication.
 /// </summary>
 public class OrderSyncJob
 {
@@ -15,10 +15,9 @@ public class OrderSyncJob
 
     public async Task<int> RunAsync()
     {
-        using var conn = new SqlConnection(_connectionString);
+        using var conn = CreateConnection();
         await conn.OpenAsync();
 
-        // Get pending orders to sync
         var sql = "SELECT Id, ExternalRefId FROM Orders WHERE SyncStatus = 'Pending'";
         using var cmd = new SqlCommand(sql, conn);
         using var reader = await cmd.ExecuteReaderAsync();
@@ -30,7 +29,7 @@ public class OrderSyncJob
         }
         await reader.CloseAsync();
 
-        Console.WriteLine($"[{DateTime.Now}] Found {pendingOrders.Count} orders to sync");
+        Log.Information("Found {Count} orders to sync with Mercury", pendingOrders.Count);
 
         var synced = 0;
         using var httpClient = new HttpClient();
@@ -39,13 +38,11 @@ public class OrderSyncJob
         {
             try
             {
-                // Call Mercury API to get latest status
                 var response = await httpClient.GetStringAsync(
-                    $"https://mercury-api.partner.com/orders/{extRef}/status");
+                    $"https://mercury-api.partner.com/orders/{Uri.EscapeDataString(extRef)}/status");
 
-                // Update local DB
-                var updateSql = @"UPDATE Orders SET SyncStatus = 'Synced', 
-                                  ExternalStatus = @Status, LastSyncDate = GETDATE() 
+                var updateSql = @"UPDATE Orders SET SyncStatus = 'Synced',
+                                  ExternalStatus = @Status, LastSyncDate = GETDATE()
                                   WHERE Id = @Id";
                 using var updateCmd = new SqlCommand(updateSql, conn);
                 updateCmd.Parameters.AddWithValue("@Status", response);
@@ -56,10 +53,15 @@ public class OrderSyncJob
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[{DateTime.Now}] Sync failed for order {id}: {ex.Message}");
+                Log.Warning(ex, "Sync failed for order {OrderId}", id);
             }
         }
 
         return synced;
+    }
+
+    private SqlConnection CreateConnection()
+    {
+        return new SqlConnection(_connectionString);
     }
 }

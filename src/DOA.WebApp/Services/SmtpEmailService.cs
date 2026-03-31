@@ -1,5 +1,6 @@
-using System.Net;
-using System.Net.Mail;
+using Azure.Communication.Email;
+using Azure.Identity;
+using Microsoft.Extensions.Logging;
 
 namespace DOA.WebApp.Services;
 
@@ -9,46 +10,34 @@ public interface IEmailService
 }
 
 /// <summary>
-/// On-prem SMTP relay for email notifications.
-/// Uses internal mail server — no authentication required on internal network.
-/// 
-/// ⚠️ MIGRATION TARGET: Replace with Azure Communication Services (Email)
+/// Azure Communication Services email implementation.
+/// Uses DefaultAzureCredential (Managed Identity) — no secrets required.
 /// </summary>
-public class SmtpEmailService : IEmailService
+public class AzureCommunicationEmailService : IEmailService
 {
-    private readonly string _smtpHost;
-    private readonly int _smtpPort;
+    private readonly EmailClient _emailClient;
     private readonly string _fromAddress;
+    private readonly ILogger<AzureCommunicationEmailService> _logger;
 
-    public SmtpEmailService(string smtpHost, int smtpPort, string fromAddress)
+    public AzureCommunicationEmailService(string acsEndpoint, string fromAddress,
+        ILogger<AzureCommunicationEmailService> logger)
     {
-        _smtpHost = smtpHost;
-        _smtpPort = smtpPort;
+        _emailClient = new EmailClient(new Uri(acsEndpoint), new DefaultAzureCredential());
         _fromAddress = fromAddress;
+        _logger = logger;
     }
 
     public async Task SendAsync(string to, string subject, string body)
     {
-        Console.WriteLine($"[{DateTime.Now}] Sending email via {_smtpHost}:{_smtpPort} to {to}");
+        var safeRecipient = to.Replace("\r", "").Replace("\n", "");
+        _logger.LogInformation("Sending email to {Recipient} via Azure Communication Services", safeRecipient);
 
-        using var client = new SmtpClient(_smtpHost, _smtpPort)
-        {
-            EnableSsl = false,                    // ⚠️ No TLS on internal relay
-            Credentials = CredentialCache.DefaultNetworkCredentials,
-            DeliveryMethod = SmtpDeliveryMethod.Network,
-            Timeout = 30000
-        };
+        var emailMessage = new EmailMessage(
+            senderAddress: _fromAddress,
+            recipients: new EmailRecipients(new List<EmailAddress> { new EmailAddress(to) }),
+            content: new EmailContent(subject) { PlainText = body });
 
-        var message = new MailMessage(
-            from: new MailAddress(_fromAddress, "DOA Order System"),
-            to: new MailAddress(to))
-        {
-            Subject = subject,
-            Body = body,
-            IsBodyHtml = false
-        };
-
-        await client.SendMailAsync(message);
-        Console.WriteLine($"[{DateTime.Now}] Email sent successfully to {to}");
+        var operation = await _emailClient.SendAsync(Azure.WaitUntil.Completed, emailMessage);
+        _logger.LogInformation("Email sent to {Recipient}, operation status: {Status}", safeRecipient, operation.Value.Status);
     }
 }

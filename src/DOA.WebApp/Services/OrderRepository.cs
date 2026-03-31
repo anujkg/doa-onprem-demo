@@ -1,4 +1,5 @@
 using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Logging;
 
 namespace DOA.WebApp.Services;
 
@@ -13,38 +14,47 @@ public interface IOrderRepository
 public record OrderDto(int Id, string CustomerName, string ProductCode, int Quantity, decimal Total, string Status, DateTime CreatedAt);
 
 /// <summary>
-/// Data access layer — raw ADO.NET against on-prem SQL Server.
-/// 
-/// ⚠️ MIGRATION TARGETS:
-///   - SQL Server on-prem → Azure SQL Database
-///   - Connection string with password → Managed Identity (DefaultAzureCredential)
-///   - Raw ADO.NET → consider Dapper or EF Core
+/// Data access layer — ADO.NET against Azure SQL Database.
+/// Uses DefaultAzureCredential (Managed Identity) for authentication — no passwords.
+/// All queries use parameterized statements to prevent SQL injection.
 /// </summary>
 public class OrderRepository : IOrderRepository
 {
     private readonly string _connectionString;
+    private readonly ILogger<OrderRepository> _logger;
 
-    public OrderRepository(string connectionString)
+    public OrderRepository(string connectionString, ILogger<OrderRepository> logger)
     {
         _connectionString = connectionString;
+        _logger = logger;
+    }
+
+    private SqlConnection CreateConnection()
+    {
+        return new SqlConnection(_connectionString);
     }
 
     public async Task<List<OrderDto>> GetOrdersAsync(string? status)
     {
         var orders = new List<OrderDto>();
 
-        using var conn = new SqlConnection(_connectionString);
+        using var conn = CreateConnection();
         await conn.OpenAsync();
 
-        // ⚠️ String concatenation in SQL — potential SQL injection vector
+        // Parameterized query — no SQL injection risk
         var sql = "SELECT Id, CustomerName, ProductCode, Quantity, Total, Status, CreatedAt FROM Orders";
         if (!string.IsNullOrEmpty(status))
         {
-            sql += $" WHERE Status = '{status}'";  // ⚠️ SQL injection risk
+            sql += " WHERE Status = @Status";
         }
         sql += " ORDER BY CreatedAt DESC";
 
         using var cmd = new SqlCommand(sql, conn);
+        if (!string.IsNullOrEmpty(status))
+        {
+            cmd.Parameters.AddWithValue("@Status", status);
+        }
+
         using var reader = await cmd.ExecuteReaderAsync();
 
         while (await reader.ReadAsync())
@@ -65,7 +75,7 @@ public class OrderRepository : IOrderRepository
 
     public async Task<OrderDto?> GetOrderByIdAsync(int id)
     {
-        using var conn = new SqlConnection(_connectionString);
+        using var conn = CreateConnection();
         await conn.OpenAsync();
 
         using var cmd = new SqlCommand(
@@ -89,7 +99,7 @@ public class OrderRepository : IOrderRepository
 
     public async Task<int> CreateOrderAsync(Controllers.CreateOrderRequest request)
     {
-        using var conn = new SqlConnection(_connectionString);
+        using var conn = CreateConnection();
         await conn.OpenAsync();
 
         var sql = @"
@@ -111,7 +121,7 @@ public class OrderRepository : IOrderRepository
 
     public async Task UpdateOrderStatusAsync(int id, string status)
     {
-        using var conn = new SqlConnection(_connectionString);
+        using var conn = CreateConnection();
         await conn.OpenAsync();
 
         using var cmd = new SqlCommand(
@@ -120,6 +130,6 @@ public class OrderRepository : IOrderRepository
         cmd.Parameters.AddWithValue("@Id", id);
 
         await cmd.ExecuteNonQueryAsync();
-        Console.WriteLine($"[{DateTime.Now}] Order {id} status updated to {status}");
+        _logger.LogInformation("Order {OrderId} status updated to {Status}", id, status.Replace("\r", "").Replace("\n", ""));
     }
 }

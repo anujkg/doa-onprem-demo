@@ -1,3 +1,6 @@
+using Azure.Identity;
+using Microsoft.Extensions.Logging;
+
 namespace DOA.WebApp.Services;
 
 public interface IReportService
@@ -6,39 +9,56 @@ public interface IReportService
 }
 
 /// <summary>
-/// SSRS (SQL Server Reporting Services) integration.
-/// Calls the on-prem SSRS report server to render PDF reports.
-/// 
-/// ⚠️ MIGRATION TARGET: Replace with Power BI Paginated Reports
+/// Power BI Paginated Reports service — replaces on-prem SSRS.
+/// Uses DefaultAzureCredential to authenticate to Power BI REST API.
+/// Reports must be published to a Power BI workspace as Paginated Reports (.rdl).
 /// </summary>
-public class SsrsReportService : IReportService
+public class PowerBiReportService : IReportService
 {
-    private readonly string _reportServerUrl;
+    private readonly string _workspaceId;
+    private readonly ILogger<PowerBiReportService> _logger;
+    private readonly DefaultAzureCredential _credential;
 
-    public SsrsReportService(string reportServerUrl)
+    public PowerBiReportService(string workspaceId, ILogger<PowerBiReportService> logger)
     {
-        _reportServerUrl = reportServerUrl;
+        _workspaceId = workspaceId;
+        _logger = logger;
+        _credential = new DefaultAzureCredential();
     }
 
     public async Task<byte[]> RenderReportAsync(string reportPath, Dictionary<string, string> parameters)
     {
-        Console.WriteLine($"[{DateTime.Now}] Rendering SSRS report: {reportPath}");
+        _logger.LogInformation("Rendering Power BI report: {ReportPath}", reportPath);
 
-        // Build SSRS render URL
-        // Example: http://ssrs01.doa.local/ReportServer?/DOA Reports/Monthly Sales&Year=2024&Month=3&rs:Format=PDF
-        var paramString = string.Join("&", parameters.Select(p => $"{p.Key}={p.Value}"));
-        var renderUrl = $"{_reportServerUrl}?{reportPath}&{paramString}&rs:Format=PDF";
+        var tokenRequestContext = new Azure.Core.TokenRequestContext(
+            new[] { "https://analysis.windows.net/powerbi/api/.default" });
+        var accessToken = await _credential.GetTokenAsync(tokenRequestContext);
 
-        using var httpClient = new HttpClient(new HttpClientHandler
-        {
-            UseDefaultCredentials = true   // ⚠️ Windows auth to SSRS
-        });
+        var paramString = string.Join("&", parameters.Select(p =>
+            $"rp:{Uri.EscapeDataString(p.Key)}={Uri.EscapeDataString(p.Value)}"));
+        var reportName = Uri.EscapeDataString(reportPath.TrimStart('/'));
+        var exportUrl = $"https://api.powerbi.com/v1.0/myorg/groups/{_workspaceId}/reports/{reportName}/ExportTo";
 
-        var response = await httpClient.GetAsync(renderUrl);
+        using var httpClient = new HttpClient();
+        httpClient.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken.Token);
+
+        var requestBody = new StringContent(
+            System.Text.Json.JsonSerializer.Serialize(new
+            {
+                format = "PDF",
+                paginatedReportConfiguration = new
+                {
+                    parameterValues = parameters.Select(p => new { name = p.Key, value = p.Value }).ToArray()
+                }
+            }),
+            System.Text.Encoding.UTF8, "application/json");
+
+        var response = await httpClient.PostAsync(exportUrl, requestBody);
         response.EnsureSuccessStatusCode();
 
         var reportBytes = await response.Content.ReadAsByteArrayAsync();
-        Console.WriteLine($"[{DateTime.Now}] SSRS report rendered: {reportPath} ({reportBytes.Length} bytes)");
+        _logger.LogInformation("Power BI report rendered: {ReportPath} ({Bytes} bytes)", reportPath, reportBytes.Length);
 
         return reportBytes;
     }
