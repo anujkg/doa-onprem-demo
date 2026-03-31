@@ -1,89 +1,118 @@
-using DOA.WebApp.Auth;
+using Azure.Identity;
 using DOA.WebApp.Services;
-using Microsoft.AspNetCore.Authentication.Negotiate;
+using Microsoft.Identity.Web;
+using Serilog;
 
-var builder = WebApplication.CreateBuilder(args);
+// Configure Serilog early
+Log.Logger = new LoggerConfiguration()
+    .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}")
+    .CreateBootstrapLogger();
 
-// ============================================================
-// Authentication — LDAP / Active Directory (On-Prem)
-// Uses Windows Negotiate (Kerberos/NTLM) + LDAP group lookups
-// ============================================================
-builder.Services.AddAuthentication(NegotiateDefaults.AuthenticationScheme)
-    .AddNegotiate();
-
-builder.Services.AddAuthorization(options =>
+try
 {
-    options.AddPolicy("AdminOnly", policy =>
-        policy.RequireRole("DOA\\AppAdmins"));
-    options.AddPolicy("ReportViewer", policy =>
-        policy.RequireRole("DOA\\ReportViewers"));
-});
+    var builder = WebApplication.CreateBuilder(args);
 
-// ============================================================
-// LDAP Service — queries Active Directory for user details
-// ============================================================
-builder.Services.AddSingleton<ILdapAuthService>(sp =>
-{
-    var config = builder.Configuration;
-    return new LdapAuthService(
-        ldapServer: config["Ldap:Server"]!,        // e.g. "ldap://dc01.doa.local"
-        ldapPort: int.Parse(config["Ldap:Port"]!),  // 389
-        baseDn: config["Ldap:BaseDN"]!,             // "DC=doa,DC=local"
-        serviceAccount: config["Ldap:ServiceAccount"]!,
-        servicePassword: config["Ldap:ServicePassword"]!  // ⚠️ Password in config
-    );
-});
+    // ============================================================
+    // Serilog structured logging
+    // ============================================================
+    builder.Host.UseSerilog((ctx, services, config) =>
+        config
+            .ReadFrom.Configuration(ctx.Configuration)
+            .ReadFrom.Services(services)
+            .Enrich.FromLogContext()
+            .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}"));
 
-// ============================================================
-// Data Access — SQL Server with raw connection string
-// ============================================================
-builder.Services.AddScoped<IOrderRepository>(sp =>
-{
-    // ⚠️ Connection string has username/password embedded
-    var connStr = builder.Configuration.GetConnectionString("SqlServer")!;
-    return new OrderRepository(connStr);
-});
+    // ============================================================
+    // Key Vault configuration (secrets loaded at startup)
+    // ============================================================
+    var keyVaultEndpoint = builder.Configuration["KeyVault:Endpoint"];
+    if (!string.IsNullOrEmpty(keyVaultEndpoint))
+    {
+        builder.Configuration.AddAzureKeyVault(
+            new Uri(keyVaultEndpoint),
+            new DefaultAzureCredential());
+    }
 
-// ============================================================
-// Email Notifications — On-prem SMTP relay
-// ============================================================
-builder.Services.AddSingleton<IEmailService>(sp =>
-{
-    var config = builder.Configuration;
-    return new SmtpEmailService(
-        smtpHost: config["Smtp:Host"]!,       // "smtp.doa.local"
-        smtpPort: int.Parse(config["Smtp:Port"]!),  // 25
-        fromAddress: config["Smtp:FromAddress"]!
-    );
-});
+    // ============================================================
+    // Authentication — Microsoft Entra ID (replacing LDAP/Negotiate)
+    // ============================================================
+    builder.Services.AddMicrosoftIdentityWebApiAuthentication(builder.Configuration, "AzureAd");
 
-// ============================================================
-// Reporting — SSRS integration
-// ============================================================
-builder.Services.AddSingleton<IReportService>(sp =>
-{
-    var reportServerUrl = builder.Configuration["Ssrs:ServerUrl"]!;
-    return new SsrsReportService(reportServerUrl);
-});
+    builder.Services.AddAuthorization(options =>
+    {
+        options.AddPolicy("AdminOnly", policy =>
+            policy.RequireRole("AppAdmins"));
+        options.AddPolicy("ReportViewer", policy =>
+            policy.RequireRole("ReportViewers"));
+    });
 
-builder.Services.AddControllers();
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+    // ============================================================
+    // Data Access — Azure SQL with Managed Identity
+    // ============================================================
+    builder.Services.AddScoped<IOrderRepository>(sp =>
+    {
+        var connStr = builder.Configuration.GetConnectionString("SqlServer")!;
+        var logger = sp.GetRequiredService<ILogger<OrderRepository>>();
+        return new OrderRepository(connStr, logger);
+    });
 
-// Logging — basic Console.WriteLine pattern (no structured logging)
-Console.WriteLine($"[{DateTime.Now}] DOA WebApp starting...");
+    // ============================================================
+    // Email — Azure Communication Services (replacing on-prem SMTP)
+    // ============================================================
+    builder.Services.AddSingleton<IEmailService>(sp =>
+    {
+        var config = builder.Configuration;
+        var logger = sp.GetRequiredService<ILogger<AzureCommunicationEmailService>>();
+        return new AzureCommunicationEmailService(
+            acsEndpoint: config["AzureCommunicationServices:Endpoint"]!,
+            fromAddress: config["AzureCommunicationServices:FromAddress"]!,
+            logger: logger);
+    });
 
-var app = builder.Build();
+    // ============================================================
+    // Reporting — Power BI Paginated Reports (replacing SSRS)
+    // ============================================================
+    builder.Services.AddSingleton<IReportService>(sp =>
+    {
+        var workspaceId = builder.Configuration["PowerBi:WorkspaceId"]!;
+        var logger = sp.GetRequiredService<ILogger<PowerBiReportService>>();
+        return new PowerBiReportService(workspaceId, logger);
+    });
 
-if (app.Environment.IsDevelopment())
-{
-    app.UseSwagger();
-    app.UseSwaggerUI();
+    builder.Services.AddControllers();
+    builder.Services.AddEndpointsApiExplorer();
+    builder.Services.AddSwaggerGen();
+
+    // ============================================================
+    // Health checks (required for Container Apps probes)
+    // ============================================================
+    builder.Services.AddHealthChecks();
+
+    Log.Information("DOA WebApp starting...");
+
+    var app = builder.Build();
+
+    if (app.Environment.IsDevelopment())
+    {
+        app.UseSwagger();
+        app.UseSwaggerUI();
+    }
+
+    app.UseSerilogRequestLogging();
+    app.UseAuthentication();
+    app.UseAuthorization();
+    app.MapControllers();
+    app.MapHealthChecks("/healthz");
+
+    Log.Information("DOA WebApp started");
+    app.Run();
 }
-
-app.UseAuthentication();
-app.UseAuthorization();
-app.MapControllers();
-
-Console.WriteLine($"[{DateTime.Now}] DOA WebApp started on {string.Join(", ", app.Urls)}");
-app.Run();
+catch (Exception ex)
+{
+    Log.Fatal(ex, "DOA WebApp failed to start");
+    throw;
+}
+finally
+{
+    Log.CloseAndFlush();
+}

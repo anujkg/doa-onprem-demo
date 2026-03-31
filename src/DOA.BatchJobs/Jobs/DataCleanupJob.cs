@@ -1,12 +1,12 @@
+using Azure.Identity;
 using Microsoft.Data.SqlClient;
+using Serilog;
 
 namespace DOA.BatchJobs.Jobs;
 
 /// <summary>
 /// Archives orders older than 2 years to the archive table.
-/// Runs as part of nightly batch to keep the main Orders table performant.
-/// 
-/// ⚠️ MIGRATION: SQL connection → Managed Identity; consider Azure SQL auto-archive policies
+/// Uses DefaultAzureCredential (Managed Identity) for Azure SQL authentication.
 /// </summary>
 public class DataCleanupJob
 {
@@ -16,30 +16,42 @@ public class DataCleanupJob
 
     public async Task<int> RunAsync()
     {
-        using var conn = new SqlConnection(_connectionString);
+        using var conn = CreateConnection();
         await conn.OpenAsync();
 
-        // Archive old orders
         var archiveSql = @"
-            INSERT INTO Orders_Archive 
-            SELECT * FROM Orders 
-            WHERE CreatedAt < DATEADD(YEAR, -2, GETDATE()) 
+            INSERT INTO Orders_Archive
+            SELECT * FROM Orders
+            WHERE CreatedAt < DATEADD(YEAR, -2, GETDATE())
             AND Status IN ('Delivered', 'Cancelled')";
 
         using var archiveCmd = new SqlCommand(archiveSql, conn);
         var archived = await archiveCmd.ExecuteNonQueryAsync();
 
-        // Delete archived orders from main table
         var deleteSql = @"
-            DELETE FROM Orders 
-            WHERE CreatedAt < DATEADD(YEAR, -2, GETDATE()) 
+            DELETE FROM Orders
+            WHERE CreatedAt < DATEADD(YEAR, -2, GETDATE())
             AND Status IN ('Delivered', 'Cancelled')";
 
         using var deleteCmd = new SqlCommand(deleteSql, conn);
         await deleteCmd.ExecuteNonQueryAsync();
 
-        Console.WriteLine($"[{DateTime.Now}] Archived and cleaned {archived} orders");
+        Log.Information("Archived and cleaned {Count} orders", archived);
 
         return archived;
+    }
+
+    private SqlConnection CreateConnection()
+    {
+        var conn = new SqlConnection(_connectionString);
+        if (!_connectionString.Contains("Password") && !_connectionString.Contains("Pwd"))
+        {
+            var credential = new DefaultAzureCredential();
+            var tokenRequestContext = new Azure.Core.TokenRequestContext(
+                new[] { "https://database.windows.net/.default" });
+            var tokenResult = credential.GetToken(tokenRequestContext);
+            conn.AccessToken = tokenResult.Token;
+        }
+        return conn;
     }
 }

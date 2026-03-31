@@ -1,58 +1,72 @@
+using Azure.Identity;
+using Azure.Storage.Blobs;
 using DOA.BatchJobs.Jobs;
-using Microsoft.Data.SqlClient;
+using Serilog;
 
-// ===========================================================
-// DOA Batch Job Runner
-// Runs as a scheduled task via Windows Task Scheduler (on-prem)
-// Triggered nightly at 2:00 AM by: schtasks
-//
-// ⚠️ MIGRATION TARGET: Azure Container Apps Job (cron schedule)
-// ===========================================================
+// Configure Serilog structured logging
+Log.Logger = new LoggerConfiguration()
+    .WriteTo.Console(outputTemplate: "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj}{NewLine}{Exception}")
+    .CreateLogger();
 
-Console.WriteLine($"[{DateTime.Now}] ========================================");
-Console.WriteLine($"[{DateTime.Now}] DOA Batch Job Runner — Starting");
-Console.WriteLine($"[{DateTime.Now}] ========================================");
+Log.Information("========================================");
+Log.Information("DOA Batch Job Runner — Starting");
+Log.Information("========================================");
 
-// ⚠️ Connection string hardcoded — reads from environment variable on prod server
+// Azure SQL — uses Managed Identity (DefaultAzureCredential), no passwords
 var connectionString = Environment.GetEnvironmentVariable("DOA_SQL_CONNSTR")
-    ?? "Server=sqlprod01.doa.local;Database=DOA_Orders;User Id=doa_batch;Password=B@tch!2024;TrustServerCertificate=true";
+    ?? "Server=sql-doa-prod.database.windows.net;Database=DOA_Orders;Authentication=Active Directory Managed Identity;Encrypt=true";
 
-var smtpHost = Environment.GetEnvironmentVariable("DOA_SMTP_HOST") ?? "smtp.doa.local";
+// Azure Communication Services endpoint (from Key Vault via env var)
+var acsEndpoint = Environment.GetEnvironmentVariable("DOA_ACS_ENDPOINT")
+    ?? "https://<acs-resource>.communication.azure.com";
+
+var acsFromAddress = Environment.GetEnvironmentVariable("DOA_ACS_FROM_ADDRESS")
+    ?? "DoNotReply@<acs-domain>.azurecomm.net";
+
+// Azure Blob Storage for data feeds (replacing NFS file share)
+var blobConnectionString = Environment.GetEnvironmentVariable("DOA_BLOB_ACCOUNT_URL")
+    ?? "https://<storage-account>.blob.core.windows.net";
+
+var credential = new DefaultAzureCredential();
+var blobServiceClient = new BlobServiceClient(new Uri(blobConnectionString), credential);
 
 try
 {
-    // Job 1: Nightly Data Import — pull data from external feed
-    Console.WriteLine($"[{DateTime.Now}] --- Job 1: Data Import ---");
-    var importJob = new DataImportJob(connectionString);
+    // Job 1: Nightly Data Import — pull data from Azure Blob Storage
+    Log.Information("--- Job 1: Data Import ---");
+    var importJob = new DataImportJob(connectionString, blobServiceClient);
     var importedCount = await importJob.RunAsync();
-    Console.WriteLine($"[{DateTime.Now}] Imported {importedCount} records");
+    Log.Information("Imported {Count} records", importedCount);
 
     // Job 2: Order Status Sync — sync with Mercury application
-    Console.WriteLine($"[{DateTime.Now}] --- Job 2: Order Status Sync ---");
+    Log.Information("--- Job 2: Order Status Sync ---");
     var syncJob = new OrderSyncJob(connectionString);
     var syncedCount = await syncJob.RunAsync();
-    Console.WriteLine($"[{DateTime.Now}] Synced {syncedCount} order statuses");
+    Log.Information("Synced {Count} order statuses", syncedCount);
 
-    // Job 3: Email Notifications — send pending email digests
-    Console.WriteLine($"[{DateTime.Now}] --- Job 3: Email Notifications ---");
-    var emailJob = new EmailDigestJob(connectionString, smtpHost);
+    // Job 3: Email Notifications — send pending email digests via ACS
+    Log.Information("--- Job 3: Email Notifications ---");
+    var emailJob = new EmailDigestJob(connectionString, acsEndpoint, acsFromAddress, credential);
     var emailsSent = await emailJob.RunAsync();
-    Console.WriteLine($"[{DateTime.Now}] Sent {emailsSent} notification emails");
+    Log.Information("Sent {Count} notification emails", emailsSent);
 
     // Job 4: Data Cleanup — archive orders older than 2 years
-    Console.WriteLine($"[{DateTime.Now}] --- Job 4: Data Cleanup ---");
+    Log.Information("--- Job 4: Data Cleanup ---");
     var cleanupJob = new DataCleanupJob(connectionString);
     var archivedCount = await cleanupJob.RunAsync();
-    Console.WriteLine($"[{DateTime.Now}] Archived {archivedCount} old orders");
+    Log.Information("Archived {Count} old orders", archivedCount);
 
-    Console.WriteLine($"[{DateTime.Now}] ========================================");
-    Console.WriteLine($"[{DateTime.Now}] All jobs completed successfully");
-    Console.WriteLine($"[{DateTime.Now}] ========================================");
+    Log.Information("========================================");
+    Log.Information("All jobs completed successfully");
+    Log.Information("========================================");
     Environment.ExitCode = 0;
 }
 catch (Exception ex)
 {
-    Console.WriteLine($"[{DateTime.Now}] ❌ BATCH JOB FAILED: {ex.Message}");
-    Console.WriteLine($"[{DateTime.Now}] Stack: {ex.StackTrace}");
+    Log.Fatal(ex, "BATCH JOB FAILED");
     Environment.ExitCode = 1;
+}
+finally
+{
+    Log.CloseAndFlush();
 }

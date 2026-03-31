@@ -1,5 +1,5 @@
-# DOA Application — Current CI/CD Pipeline (On-Prem Kubernetes)
-# Builds, tests, and deploys to on-prem Harbor registry + K8s cluster
+# DOA Application — Azure Container Apps CI/CD Pipeline
+# Builds, tests, pushes to ACR, and deploys to Azure Container Apps
 
 name: DOA CI/CD Pipeline
 
@@ -10,14 +10,16 @@ on:
     branches: [main]
 
 env:
-  HARBOR_REGISTRY: harbor.doa.local
+  ACR_REGISTRY: acrdoaprod.azurecr.io
   IMAGE_NAME_WEB: doa/webapp
   IMAGE_NAME_BATCH: doa/batch-jobs
-  K8S_NAMESPACE: doa-production
+  AZURE_CONTAINER_APP_WEB: ca-doa-web-prod
+  AZURE_CONTAINER_APP_BATCH: caj-doa-batch-prod
+  RESOURCE_GROUP: rg-doa-prod
 
 jobs:
   build-and-test:
-    runs-on: self-hosted  # ⚠️ On-prem runner
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -37,42 +39,74 @@ jobs:
 
   docker-build:
     needs: build-and-test
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
-      # ⚠️ Pushing to on-prem Harbor registry
-      - name: Docker Login (Harbor)
-        run: docker login ${{ env.HARBOR_REGISTRY }} -u ${{ secrets.HARBOR_USER }} -p ${{ secrets.HARBOR_PASSWORD }}
+      - name: Azure Login (OIDC — no secrets)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to Azure Container Registry
+        run: az acr login --name acrdoaprod
 
       - name: Build & Push Web App
         run: |
-          docker build -f src/Dockerfile -t ${{ env.HARBOR_REGISTRY }}/${{ env.IMAGE_NAME_WEB }}:${{ github.sha }} src/
-          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.IMAGE_NAME_WEB }}:${{ github.sha }}
+          docker build -f src/Dockerfile \
+            -t ${{ env.ACR_REGISTRY }}/${{ env.IMAGE_NAME_WEB }}:${{ github.sha }} \
+            -t ${{ env.ACR_REGISTRY }}/${{ env.IMAGE_NAME_WEB }}:latest \
+            src/
+          docker push ${{ env.ACR_REGISTRY }}/${{ env.IMAGE_NAME_WEB }}:${{ github.sha }}
 
       - name: Build & Push Batch Jobs
         run: |
-          docker build -f src/Dockerfile.batch -t ${{ env.HARBOR_REGISTRY }}/${{ env.IMAGE_NAME_BATCH }}:${{ github.sha }} src/
-          docker push ${{ env.HARBOR_REGISTRY }}/${{ env.IMAGE_NAME_BATCH }}:${{ github.sha }}
+          docker build -f src/Dockerfile.batch \
+            -t ${{ env.ACR_REGISTRY }}/${{ env.IMAGE_NAME_BATCH }}:${{ github.sha }} \
+            -t ${{ env.ACR_REGISTRY }}/${{ env.IMAGE_NAME_BATCH }}:latest \
+            src/
+          docker push ${{ env.ACR_REGISTRY }}/${{ env.IMAGE_NAME_BATCH }}:${{ github.sha }}
 
   deploy:
     needs: docker-build
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # ⚠️ kubectl configured for on-prem cluster
-      - name: Update K8s deployment
+      - name: Deploy Web App to Container Apps
         run: |
-          kubectl set image deployment/doa-webapp \
-            doa-webapp=${{ env.HARBOR_REGISTRY }}/${{ env.IMAGE_NAME_WEB }}:${{ github.sha }} \
-            -n ${{ env.K8S_NAMESPACE }}
-          
-          kubectl rollout status deployment/doa-webapp -n ${{ env.K8S_NAMESPACE }} --timeout=300s
+          az containerapp update \
+            --name ${{ env.AZURE_CONTAINER_APP_WEB }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.ACR_REGISTRY }}/${{ env.IMAGE_NAME_WEB }}:${{ github.sha }}
 
-      - name: Update batch CronJob image
+      - name: Update Batch Job image
         run: |
-          kubectl set image cronjob/doa-batch-nightly \
-            doa-batch=${{ env.HARBOR_REGISTRY }}/${{ env.IMAGE_NAME_BATCH }}:${{ github.sha }} \
-            -n ${{ env.K8S_NAMESPACE }}
+          az containerapp job update \
+            --name ${{ env.AZURE_CONTAINER_APP_BATCH }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --image ${{ env.ACR_REGISTRY }}/${{ env.IMAGE_NAME_BATCH }}:${{ github.sha }}
+
+      - name: Verify Web App health
+        run: |
+          sleep 30
+          az containerapp show \
+            --name ${{ env.AZURE_CONTAINER_APP_WEB }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --query "properties.latestRevisionFqdn" -o tsv | \
+          xargs -I{} curl -f https://{}/healthz

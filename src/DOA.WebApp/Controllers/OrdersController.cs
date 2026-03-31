@@ -1,6 +1,7 @@
 using DOA.WebApp.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
 namespace DOA.WebApp.Controllers;
 
@@ -11,17 +12,20 @@ public class OrdersController : ControllerBase
 {
     private readonly IOrderRepository _orderRepo;
     private readonly IEmailService _emailService;
+    private readonly ILogger<OrdersController> _logger;
 
-    public OrdersController(IOrderRepository orderRepo, IEmailService emailService)
+    public OrdersController(IOrderRepository orderRepo, IEmailService emailService,
+        ILogger<OrdersController> logger)
     {
         _orderRepo = orderRepo;
         _emailService = emailService;
+        _logger = logger;
     }
 
     [HttpGet]
     public async Task<IActionResult> GetOrders([FromQuery] string? status = null)
     {
-        Console.WriteLine($"[{DateTime.Now}] GET /api/orders — User: {User.Identity?.Name}");
+        _logger.LogInformation("GET /api/orders — User: {User}", User.Identity?.Name);
 
         var orders = await _orderRepo.GetOrdersAsync(status);
         return Ok(orders);
@@ -30,7 +34,7 @@ public class OrdersController : ControllerBase
     [HttpGet("{id}")]
     public async Task<IActionResult> GetOrder(int id)
     {
-        Console.WriteLine($"[{DateTime.Now}] GET /api/orders/{id} — User: {User.Identity?.Name}");
+        _logger.LogInformation("GET /api/orders/{OrderId} — User: {User}", id, User.Identity?.Name);
 
         var order = await _orderRepo.GetOrderByIdAsync(id);
         if (order == null) return NotFound();
@@ -40,18 +44,16 @@ public class OrdersController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> CreateOrder([FromBody] CreateOrderRequest request)
     {
-        Console.WriteLine($"[{DateTime.Now}] POST /api/orders — User: {User.Identity?.Name}");
+        _logger.LogInformation("POST /api/orders — User: {User}", User.Identity?.Name);
 
         var orderId = await _orderRepo.CreateOrderAsync(request);
 
-        // Send confirmation via on-prem SMTP
         await _emailService.SendAsync(
             to: request.CustomerEmail,
             subject: $"Order #{orderId} Confirmed",
-            body: $"Your order has been placed. Order ID: {orderId}"
-        );
+            body: $"Your order has been placed. Order ID: {orderId}");
 
-        Console.WriteLine($"[{DateTime.Now}] Order {orderId} created, email sent to {request.CustomerEmail}");
+        _logger.LogInformation("Order {OrderId} created, confirmation email sent to {Email}", orderId, request.CustomerEmail);
         return CreatedAtAction(nameof(GetOrder), new { id = orderId }, new { OrderId = orderId });
     }
 
@@ -59,7 +61,7 @@ public class OrdersController : ControllerBase
     [Authorize(Policy = "AdminOnly")]
     public async Task<IActionResult> UpdateStatus(int id, [FromBody] UpdateStatusRequest request)
     {
-        Console.WriteLine($"[{DateTime.Now}] PUT /api/orders/{id}/status — User: {User.Identity?.Name}");
+        _logger.LogInformation("PUT /api/orders/{OrderId}/status — User: {User}", id, User.Identity?.Name);
 
         await _orderRepo.UpdateOrderStatusAsync(id, request.Status);
         return NoContent();

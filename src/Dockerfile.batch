@@ -1,13 +1,16 @@
-# DOA Batch Jobs — On-Prem Dockerfile  
-# ⚠️ Same anti-patterns as the web app Dockerfile
-
-FROM mcr.microsoft.com/dotnet/sdk:8.0
+# Stage 1: Build
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
+COPY DOA.BatchJobs/DOA.BatchJobs.csproj DOA.BatchJobs/
+RUN dotnet restore DOA.BatchJobs/DOA.BatchJobs.csproj
 COPY . .
 RUN dotnet publish DOA.BatchJobs/DOA.BatchJobs.csproj -c Release -o /app/publish
 
-FROM mcr.microsoft.com/dotnet/sdk:8.0
+# Stage 2: Runtime
+FROM mcr.microsoft.com/dotnet/runtime:8.0 AS runtime
 WORKDIR /app
+RUN addgroup --system app && adduser --system --ingroup app app
 COPY --from=build /app/publish .
-
+RUN chown -R app:app /app
+USER app
 ENTRYPOINT ["dotnet", "DOA.BatchJobs.dll"]

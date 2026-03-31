@@ -1,7 +1,7 @@
-using DOA.WebApp.Auth;
 using DOA.WebApp.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 
 namespace DOA.WebApp.Controllers;
 
@@ -11,12 +11,12 @@ namespace DOA.WebApp.Controllers;
 public class ReportsController : ControllerBase
 {
     private readonly IReportService _reportService;
-    private readonly ILdapAuthService _ldapService;
+    private readonly ILogger<ReportsController> _logger;
 
-    public ReportsController(IReportService reportService, ILdapAuthService ldapService)
+    public ReportsController(IReportService reportService, ILogger<ReportsController> logger)
     {
         _reportService = reportService;
-        _ldapService = ldapService;
+        _logger = logger;
     }
 
     [HttpGet("monthly-sales")]
@@ -25,15 +25,7 @@ public class ReportsController : ControllerBase
         [FromQuery] int month)
     {
         var username = User.Identity?.Name ?? "unknown";
-        Console.WriteLine($"[{DateTime.Now}] Report request: MonthlySales {year}-{month} by {username}");
-
-        // Check LDAP group membership for report access
-        var groups = _ldapService.GetUserGroups(username);
-        if (!groups.Contains("DOA\\ReportViewers"))
-        {
-            Console.WriteLine($"[{DateTime.Now}] Report access denied for {username}");
-            return Forbid();
-        }
+        _logger.LogInformation("Report request: MonthlySales {Year}-{Month} by {Username}", year, month, username);
 
         var reportBytes = await _reportService.RenderReportAsync(
             reportPath: "/DOA Reports/Monthly Sales",
@@ -49,7 +41,7 @@ public class ReportsController : ControllerBase
     [HttpGet("inventory")]
     public async Task<IActionResult> GetInventoryReport()
     {
-        Console.WriteLine($"[{DateTime.Now}] Report request: Inventory by {User.Identity?.Name}");
+        _logger.LogInformation("Report request: Inventory by {Username}", User.Identity?.Name);
 
         var reportBytes = await _reportService.RenderReportAsync(
             reportPath: "/DOA Reports/Inventory Status",

@@ -1,21 +1,20 @@
-# DOA Application — On-Prem Dockerfile
-# ⚠️ Single-stage build, runs as root, no health check
-
+# Stage 1: Build
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
+COPY DOA.WebApp/DOA.WebApp.csproj DOA.WebApp/
+RUN dotnet restore DOA.WebApp/DOA.WebApp.csproj
 COPY . .
 RUN dotnet publish DOA.WebApp/DOA.WebApp.csproj -c Release -o /app/publish
 
-# ⚠️ Using SDK image for runtime (much larger than needed)
-FROM mcr.microsoft.com/dotnet/sdk:8.0
+# Stage 2: Runtime
+FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
+RUN addgroup --system app && adduser --system --ingroup app app
 COPY --from=build /app/publish .
-
-# ⚠️ No non-root user
-# ⚠️ No HEALTHCHECK instruction
-# ⚠️ No .dockerignore (copies unnecessary files)
-
+RUN chown -R app:app /app
+USER app
 EXPOSE 8080
 ENV ASPNETCORE_URLS=http://+:8080
-
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -f http://localhost:8080/healthz || exit 1
 ENTRYPOINT ["dotnet", "DOA.WebApp.dll"]
