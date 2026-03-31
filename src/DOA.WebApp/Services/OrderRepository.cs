@@ -130,6 +130,6 @@ public class OrderRepository : IOrderRepository
         cmd.Parameters.AddWithValue("@Id", id);
 
         await cmd.ExecuteNonQueryAsync();
-        _logger.LogInformation("Order {OrderId} status updated to {Status}", id, status);
+        _logger.LogInformation("Order {OrderId} status updated to {Status}", id, status.Replace("\r", "").Replace("\n", ""));
     }
 }

@@ -29,7 +29,8 @@ public class AzureCommunicationEmailService : IEmailService
 
     public async Task SendAsync(string to, string subject, string body)
     {
-        _logger.LogInformation("Sending email to {Recipient} via Azure Communication Services", to);
+        var safeRecipient = to.Replace("\r", "").Replace("\n", "");
+        _logger.LogInformation("Sending email to {Recipient} via Azure Communication Services", safeRecipient);
 
         var emailMessage = new EmailMessage(
             senderAddress: _fromAddress,
@@ -37,6 +38,6 @@ public class AzureCommunicationEmailService : IEmailService
             content: new EmailContent(subject) { PlainText = body });
 
         var operation = await _emailClient.SendAsync(Azure.WaitUntil.Completed, emailMessage);
-        _logger.LogInformation("Email sent to {Recipient}, operation status: {Status}", to, operation.Value.Status);
+        _logger.LogInformation("Email sent to {Recipient}, operation status: {Status}", safeRecipient, operation.Value.Status);
     }
 }

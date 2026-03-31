@@ -53,7 +53,7 @@ public class OrdersController : ControllerBase
             subject: $"Order #{orderId} Confirmed",
             body: $"Your order has been placed. Order ID: {orderId}");
 
-        _logger.LogInformation("Order {OrderId} created, confirmation email sent to {Email}", orderId, request.CustomerEmail);
+        _logger.LogInformation("Order {OrderId} created, confirmation email sent to {Email}", orderId, request.CustomerEmail.Replace("\r", "").Replace("\n", ""));
         return CreatedAtAction(nameof(GetOrder), new { id = orderId }, new { OrderId = orderId });
     }
 
