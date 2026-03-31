@@ -39,7 +39,7 @@ public class DataImportJob
 
         var download = await blobClient.DownloadContentAsync();
         var content = download.Value.Content.ToString();
-        var lines = content.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        var lines = content.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
 
         var count = 0;
         using var conn = CreateConnection();

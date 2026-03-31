@@ -36,7 +36,7 @@ public class PowerBiReportService : IReportService
 
         var paramString = string.Join("&", parameters.Select(p =>
             $"rp:{Uri.EscapeDataString(p.Key)}={Uri.EscapeDataString(p.Value)}"));
-        var reportName = Uri.EscapeDataString(reportPath.TrimStart('/').Replace(" ", "%20"));
+        var reportName = Uri.EscapeDataString(reportPath.TrimStart('/'));
         var exportUrl = $"https://api.powerbi.com/v1.0/myorg/groups/{_workspaceId}/reports/{reportName}/ExportTo";
 
         using var httpClient = new HttpClient();

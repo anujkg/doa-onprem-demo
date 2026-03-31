@@ -104,9 +104,17 @@ jobs:
 
       - name: Verify Web App health
         run: |
-          sleep 30
-          az containerapp show \
+          FQDN=$(az containerapp show \
             --name ${{ env.AZURE_CONTAINER_APP_WEB }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
-            --query "properties.latestRevisionFqdn" -o tsv | \
-          xargs -I{} curl -f https://{}/healthz
+            --query "properties.latestRevisionFqdn" -o tsv)
+          for i in $(seq 1 10); do
+            if curl -sf "https://${FQDN}/healthz"; then
+              echo "Health check passed"
+              exit 0
+            fi
+            echo "Attempt ${i}/10 failed, retrying in 15s..."
+            sleep 15
+          done
+          echo "Health check failed after 10 attempts"
+          exit 1
